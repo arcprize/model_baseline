@@ -2,6 +2,7 @@ from pydantic import BaseModel, model_validator, root_validator
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime
 import json
+import hashlib
 
 class APIType:
     """
@@ -20,6 +21,68 @@ class ARCPair(BaseModel):
 class ARCTask(BaseModel):
     train: List[ARCPair]
     test: List[ARCPair]
+    
+    def __eq__(self, other: 'ARCTask') -> bool:
+        if not isinstance(other, ARCTask):
+            return False
+        return (len(self.train) == len(other.train) and
+                len(self.test) == len(other.test) and
+                all(a == b for a, b in zip(self.train, other.train)) and
+                all(a == b for a, b in zip(self.test, other.test)))
+    
+    def __repr__(self) -> str:
+        n_train = len(self.train)
+        n_test = len(self.test)
+        task_hash = self.get_hash()
+        return f"ARCTask({n_train} train + {n_test} test, {task_hash})"
+    
+    def __str__(self) -> str:
+        return self.__repr__()
+    
+    def get_hash(self) -> str:
+        """Generate a stable hash of the form XXXXX-XXXXX-XXXXX_XXXXX-XXXXX-XXXXX where
+        the first set is one hash for each train pair, and the second set is one hash for each test pair"""
+        # Generate hash for each train pair
+        train_hashes = []
+        for pair in self.train:
+            pair_json = json.dumps(pair.model_dump(), sort_keys=True)
+            pair_hash = hashlib.sha256(pair_json.encode()).hexdigest()[:5]
+            train_hashes.append(pair_hash)
+        
+        # Generate hash for each test pair
+        test_hashes = []
+        for pair in self.test:
+            pair_json = json.dumps(pair.model_dump(), sort_keys=True)
+            pair_hash = hashlib.sha256(pair_json.encode()).hexdigest()[:5]
+            test_hashes.append(pair_hash)
+        
+        # Format as XXXXX-XXXXX-XXXXX_XXXXX-XXXXX-XXXXX
+        train_part = "-".join(train_hashes)
+        test_part = "-".join(test_hashes)
+        
+        return f"{train_part}_{test_part}"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return self.model_dump()
+    
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ARCTask':
+        if isinstance(data, str):
+            data = json.loads(data)
+        return cls.model_validate(data)
+    
+    @classmethod
+    def load_from_file(cls, filepath: str) -> 'ARCTask':
+        with open(filepath, 'r') as f:
+            return cls.from_dict(json.loads(f.read()))
+    
+    def save_to_file(self, filepath: str, indent: int = 2) -> None:
+        with open(filepath, 'w') as f:
+            f.write(self.to_json(indent=indent))
+
 
 class Message(BaseModel):
     role: str
@@ -57,7 +120,7 @@ class AttemptMetadata(BaseModel):
     usage: Usage
     cost: Cost
     task_id: Optional[str] = None
-    pair_index: Optional[int] = None
+    pair_index: Optional[int] = 0
     test_id: Optional[str] = None
     
     model_config = {
@@ -66,13 +129,22 @@ class AttemptMetadata(BaseModel):
         }
     }
 
+    def __str__(self):
+        """
+        Customize string representation for prettier output
+        """
+        return json.dumps(self.model_dump(), indent=2, default=str)
+    
+    __repr__ = __str__
+
 class Attempt(BaseModel):
     answer: Union[str, List[List[int]]]
     metadata: AttemptMetadata
+    correct: Optional[bool] = None
     
     @model_validator(mode='before')
     @classmethod
-    def validate_answer(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+    def validate(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Ensure answer is properly serialized"""
         if not isinstance(values, dict):
             return values
@@ -81,6 +153,9 @@ class Attempt(BaseModel):
         if isinstance(answer, list):
             # Convert nested list to string representation
             values['answer'] = json.dumps(answer)
+
+        if isinstance(values['answer'], str):
+            values['answer'] = json.loads(values['answer'])
             
         return values
     
@@ -90,9 +165,81 @@ class Attempt(BaseModel):
         }
     }
 
-class Attempts(BaseModel):
-    attempts: List[Attempt]
+class TestPairAttempts(BaseModel):
+    attempts: Union[List[Attempt], Dict[str, Attempt]]
 
+    @model_validator(mode='before')
+    @classmethod
+    def validate_attempts(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Convert dictionary of attempts with keys like 'attempt_1', 'attempt_2' to a list of attempts
+        (one for each pair) if the attempts field is a dictionary.
+        """
+        if isinstance(values, list):
+            return values
+            
+        attempts = values
+        if isinstance(attempts, dict):
+            # Check if keys follow the pattern 'attempt_X'
+            attempt_list = []
+            # Sort keys to ensure correct order (attempt_1, attempt_2, etc.)
+            for key in sorted(attempts.keys()):
+                if key.startswith('attempt_'):
+                    attempt_list.append(attempts[key])
+            
+            values['attempts'] = attempt_list
+        
+            
+        return values
+    
+    def __getitem__(self, index):
+        """
+        Allow subscripting to access attempts directly.
+        """
+        if isinstance(self.attempts, list):
+            return self.attempts[index]
+        elif isinstance(self.attempts, dict):
+            if isinstance(index, int):
+                # Convert to attempt_X format
+                key = f"attempt_{index+1}"
+                return self.attempts.get(key)
+            return self.attempts.get(index)
+
+    def __len__(self):
+        """
+        Return the number of attempts.
+        """
+        if isinstance(self.attempts, list):
+            return len(self.attempts)
+        elif isinstance(self.attempts, dict):
+            return len(self.attempts)
+        return 0
+    
+    def __iter__(self):
+        """
+        Allow iteration over attempts.
+        """
+        if isinstance(self.attempts, list):
+            return iter(self.attempts)
+        elif isinstance(self.attempts, dict):
+            # Sort keys to ensure consistent iteration order
+            return iter([self.attempts[key] for key in sorted(self.attempts.keys())])
+
+class BenchmarkedTaskResults(BaseModel):
+    """
+    Top level object for a tested task, consisting of a list of tested test pairs
+    """
+    test_pairs: List[TestPairAttempts]
+
+    def __len__(self):
+        return len(self.test_pairs)
+    
+    def __getitem__(self, index):
+        return self.test_pairs[index]
+    
+    def __iter__(self):
+        return iter(self.test_pairs)
+    
 class ModelPricing(BaseModel):
     date: str
     input: float
@@ -139,3 +286,11 @@ class ModelConfig(BaseModel):
                     del values[field_name]
                     
         return values
+
+class ScoringResult(BaseModel):
+    """
+    Result of scoring a task, containing the score (accuracy), cost, and number of attempts.
+    """
+    score: float  # Score between 0.0 and 1.0 representing accuracy
+    total_cost: float   # Total cost of all attempts
+    attempts: int # Total number of attempts made

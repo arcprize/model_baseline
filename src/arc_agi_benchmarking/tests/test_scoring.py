@@ -2,11 +2,13 @@ import pytest
 import json
 from pathlib import Path
 from arc_agi_benchmarking.scoring import ARCScorer
+from pydantic import ValidationError
 
 # Helper function to create mock JSON files
 def create_mock_json(path: Path, data: dict):
     with open(path, 'w') as f:
         json.dump(data, f)
+
 
 # --- Test Data ---
 
@@ -20,6 +22,36 @@ SOLUTION_DATA = {
     ]
 }
 
+# Base metadata with all required fields
+
+DEFAULT_COST_METADATA = {
+        "prompt_cost": 0.05,
+        "completion_cost": 0.05,
+        "total_cost": 0.1
+}
+
+DEFAULT_METADATA = {
+    "model": "test-model",
+    "provider": "test-provider",
+    "start_timestamp": "2023-01-01T00:00:00",
+    "end_timestamp": "2023-01-01T00:00:01",
+    "choices": [{"index": 0, "message": {"role": "assistant", "content": "test content"}}],
+    "kwargs": {},
+    "usage": {
+        "prompt_tokens": 10,
+        "completion_tokens": 10,
+        "total_tokens": 20,
+        "completion_tokens_details": {
+            "reasoning_tokens": 5,
+            "accepted_prediction_tokens": 3,
+            "rejected_prediction_tokens": 2
+        }
+    },
+    "cost": DEFAULT_COST_METADATA
+}
+
+
+
 # Submission Scenarios
 
 # 1. Perfect Match
@@ -27,11 +59,11 @@ SOLUTION_DATA = {
 # Expected score: 1.0
 SUBMISSION_PERFECT = [
     # Pair 0
-    {"attempt_1": {"answer": [[1, 1], [1, 1]], "metadata": {"pair_index": 0, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[1, 1], [1, 1]], "metadata": {**DEFAULT_METADATA, "pair_index": 0}}},
     # Pair 1
-    {"attempt_1": {"answer": [[2, 2]], "metadata": {"pair_index": 1, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[2, 2]], "metadata": {**DEFAULT_METADATA, "pair_index": 1}}},
     # Pair 2
-    {"attempt_1": {"answer": [[3]], "metadata": {"pair_index": 2, "cost": {"total_cost": 0.1}}}}
+    {"attempt_1": {"answer": [[3]], "metadata": {**DEFAULT_METADATA, "pair_index": 2}}}
 ]
 
 # 2. No Match
@@ -39,11 +71,11 @@ SUBMISSION_PERFECT = [
 # Expected score: 0.0
 SUBMISSION_NO_MATCH = [
     # Pair 0
-    {"attempt_1": {"answer": [[0, 0], [0, 0]], "metadata": {"pair_index": 0, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[0, 0], [0, 0]], "metadata": {**DEFAULT_METADATA, "pair_index": 0}}},
     # Pair 1
-    {"attempt_1": {"answer": [[9, 9]], "metadata": {"pair_index": 1, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[9, 9]], "metadata": {**DEFAULT_METADATA, "pair_index": 1}}},
     # Pair 2
-    {"attempt_1": {"answer": [[8]], "metadata": {"pair_index": 2, "cost": {"total_cost": 0.1}}}}
+    {"attempt_1": {"answer": [[8]], "metadata": {**DEFAULT_METADATA, "pair_index": 2}}}
 ]
 
 # 3. Partial Match (Pair 1 correct)
@@ -51,11 +83,11 @@ SUBMISSION_NO_MATCH = [
 # Expected score: 1/3
 SUBMISSION_PARTIAL = [
     # Pair 0
-    {"attempt_1": {"answer": [[0, 0], [0, 0]], "metadata": {"pair_index": 0, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[0, 0], [0, 0]], "metadata": {**DEFAULT_METADATA, "pair_index": 0}}},
     # Pair 1
-    {"attempt_1": {"answer": [[2, 2]], "metadata": {"pair_index": 1, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[2, 2]], "metadata": {**DEFAULT_METADATA, "pair_index": 1}}},
     # Pair 2
-    {"attempt_1": {"answer": [[8]], "metadata": {"pair_index": 2, "cost": {"total_cost": 0.1}}}}
+    {"attempt_1": {"answer": [[8]], "metadata": {**DEFAULT_METADATA, "pair_index": 2}}}
 ]
 
 # 4. Multiple Attempts (Pair 0 correct on 2nd attempt)
@@ -63,13 +95,15 @@ SUBMISSION_PARTIAL = [
 # even though attempt_1 was wrong. Also tests cost/attempt aggregation.
 # Expected score: 1/3
 SUBMISSION_MULTI_ATTEMPT = [
-     # Pair 0
-    {"attempt_1": {"answer": [[0, 0], [0, 0]], "metadata": {"pair_index": 0, "cost": {"total_cost": 0.1}}},
-     "attempt_2": {"answer": [[1, 1], [1, 1]], "metadata": {"pair_index": 0, "cost": {"total_cost": 0.15}}}},
+    # Pair 0
+    {             
+        "attempt_1": {"answer": [[0, 0], [0, 0]], "metadata": {**DEFAULT_METADATA, "pair_index": 0, "cost": {**DEFAULT_COST_METADATA, "total_cost": 0.1}}},
+        "attempt_2": {"answer": [[1, 1], [1, 1]], "metadata": {**DEFAULT_METADATA, "pair_index": 0, "cost": {**DEFAULT_COST_METADATA, "total_cost": 0.15}}}
+    },
     # Pair 1
-    {"attempt_1": {"answer": [[9, 9]], "metadata": {"pair_index": 1, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[9, 9]], "metadata": {**DEFAULT_METADATA, "pair_index": 1}}},
     # Pair 2
-    {"attempt_1": {"answer": [[8]], "metadata": {"pair_index": 2, "cost": {"total_cost": 0.1}}}}
+    {"attempt_1": {"answer": [[8]], "metadata": {**DEFAULT_METADATA, "pair_index": 2}}}
 ]
 
 # 5. Incorrect Dimensions (Pair 0)
@@ -78,11 +112,11 @@ SUBMISSION_MULTI_ATTEMPT = [
 # Expected score: 2/3
 SUBMISSION_WRONG_DIM = [
     # Pair 0
-    {"attempt_1": {"answer": [[1]], "metadata": {"pair_index": 0, "cost": {"total_cost": 0.1}}}}, # Wrong dim
+    {"attempt_1": {"answer": [[1]], "metadata": {**DEFAULT_METADATA, "pair_index": 0}}},
     # Pair 1
-    {"attempt_1": {"answer": [[2, 2]], "metadata": {"pair_index": 1, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[2, 2]], "metadata": {**DEFAULT_METADATA, "pair_index": 1}}},
     # Pair 2
-    {"attempt_1": {"answer": [[3]], "metadata": {"pair_index": 2, "cost": {"total_cost": 0.1}}}}
+    {"attempt_1": {"answer": [[3]], "metadata": {**DEFAULT_METADATA, "pair_index": 2}}}
 ]
 
 # 6. Different Pixels (Pair 0)
@@ -91,11 +125,11 @@ SUBMISSION_WRONG_DIM = [
 # Expected score: 2/3
 SUBMISSION_DIFF_PIXELS = [
     # Pair 0
-    {"attempt_1": {"answer": [[1, 0], [1, 1]], "metadata": {"pair_index": 0, "cost": {"total_cost": 0.1}}}}, # Diff pixel
+    {"attempt_1": {"answer": [[1, 0], [1, 1]], "metadata": {**DEFAULT_METADATA, "pair_index": 0}}},
     # Pair 1
-    {"attempt_1": {"answer": [[2, 2]], "metadata": {"pair_index": 1, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[2, 2]], "metadata": {**DEFAULT_METADATA, "pair_index": 1}}},
     # Pair 2
-    {"attempt_1": {"answer": [[3]], "metadata": {"pair_index": 2, "cost": {"total_cost": 0.1}}}}
+    {"attempt_1": {"answer": [[3]], "metadata": {**DEFAULT_METADATA, "pair_index": 2}}}
 ]
 
 # 7. None Submission (Pair 0)
@@ -106,9 +140,9 @@ SUBMISSION_NONE = [
     # Pair 0
     {"attempt_1": None}, # Attempt 1 is None for this pair
     # Pair 1
-    {"attempt_1": {"answer": [[2, 2]], "metadata": {"pair_index": 1, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[2, 2]], "metadata": {**DEFAULT_METADATA, "pair_index": 1}}},
     # Pair 2
-    {"attempt_1": {"answer": [[3]], "metadata": {"pair_index": 2, "cost": {"total_cost": 0.1}}}}
+    {"attempt_1": {"answer": [[3]], "metadata": {**DEFAULT_METADATA, "pair_index": 2}}}
 ]
 
 # 8. Empty List Submission (Pair 0)
@@ -117,11 +151,11 @@ SUBMISSION_NONE = [
 # Expected score: 2/3
 SUBMISSION_EMPTY_LIST = [
     # Pair 0
-    {"attempt_1": {"answer": [], "metadata": {"pair_index": 0, "cost": {"total_cost": 0.1}}}}, # Empty list
+    {"attempt_1": {"answer": [], "metadata": {**DEFAULT_METADATA, "pair_index": 0}}}, # Empty list
     # Pair 1
-    {"attempt_1": {"answer": [[2, 2]], "metadata": {"pair_index": 1, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[2, 2]], "metadata": {**DEFAULT_METADATA, "pair_index": 1}}},
     # Pair 2
-    {"attempt_1": {"answer": [[3]], "metadata": {"pair_index": 2, "cost": {"total_cost": 0.1}}}}
+    {"attempt_1": {"answer": [[3]], "metadata": {**DEFAULT_METADATA, "pair_index": 2}}}
 ]
 
 # 9. Pair Index Metadata (Pairs submitted out of order, Pair 1 correct)
@@ -130,11 +164,11 @@ SUBMISSION_EMPTY_LIST = [
 # Expected score: 1/3
 SUBMISSION_PAIR_INDEX_META = [
     # Pair 2 submitted first
-    {"attempt_1": {"answer": [[8]], "metadata": {"pair_index": 2, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[8]], "metadata": {**DEFAULT_METADATA, "pair_index": 2}}},
     # Pair 0 submitted second
-    {"attempt_1": {"answer": [[0, 0], [0, 0]], "metadata": {"pair_index": 0, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[0, 0], [0, 0]], "metadata": {**DEFAULT_METADATA, "pair_index": 0}}},
     # Pair 1 submitted third (correct)
-    {"attempt_1": {"answer": [[2, 2]], "metadata": {"pair_index": 1, "cost": {"total_cost": 0.1}}}},
+    {"attempt_1": {"answer": [[2, 2]], "metadata": {**DEFAULT_METADATA, "pair_index": 1}}}
 ]
 
 # --- Malformed Submissions for Error Handling Tests ---
@@ -142,28 +176,22 @@ SUBMISSION_PAIR_INDEX_META = [
 # 10. Attempt data is not a dictionary
 # Tests error handling: ensures a TypeError is raised if attempt data is not a dict.
 SUBMISSION_MALFORMED_NOT_DICT = [
-    # Pair 0
     {"attempt_1": "not_a_dictionary"}, # Invalid attempt data type
-    # Pair 1
-    {"attempt_1": {"answer": [[2, 2]], "metadata": {"pair_index": 1, "cost": {"total_cost": 0.1}}}}
+    {"attempt_1": {"answer": [[2, 2]], "metadata": {**DEFAULT_METADATA, "pair_index": 1}}}
 ]
 
 # 11. Attempt data is missing 'metadata' key
 # Tests error handling: ensures a KeyError is raised if the 'metadata' key is missing.
 SUBMISSION_MALFORMED_NO_METADATA = [
-    # Pair 0
     {"attempt_1": {"answer": [[1, 1], [1, 1]]}}, # Missing metadata
-    # Pair 1
-    {"attempt_1": {"answer": [[2, 2]], "metadata": {"pair_index": 1, "cost": {"total_cost": 0.1}}}}
+    {"attempt_1": {"answer": [[2, 2]], "metadata": {**DEFAULT_METADATA, "pair_index": 1}}}
 ]
 
 # 12. Attempt data is missing 'answer' key
 # Tests error handling: ensures a KeyError is raised if the 'answer' key is missing.
 SUBMISSION_MALFORMED_NO_ANSWER = [
-    # Pair 0
-    {"attempt_1": {"metadata": {"pair_index": 0, "cost": {"total_cost": 0.1}}}}, # Missing answer
-    # Pair 1
-    {"attempt_1": {"answer": [[2, 2]], "metadata": {"pair_index": 1, "cost": {"total_cost": 0.1}}}}
+    {"attempt_1": {"metadata": {**DEFAULT_METADATA, "pair_index": 0}}}, # Missing answer
+    {"attempt_1": {"answer": [[2, 2]], "metadata": {**DEFAULT_METADATA, "pair_index": 1}}}
 ]
 
 # --- Pytest Fixture ---
@@ -180,7 +208,7 @@ def arc_scorer_fixture(tmp_path):
     create_mock_json(solution_file, SOLUTION_DATA)
 
     # Create dummy submission files (will be overwritten by tests)
-    # This helps instantiate ARCScorer, though score_task takes the direct path
+    # This helps instantiate ARCScorer, though score_task_from_file takes the direct path
     submission_file = submission_dir / "test_task.json"
     create_mock_json(submission_file, {})
 
@@ -196,7 +224,7 @@ def run_test_scenario(arc_scorer_fixture, submission_data, expected_score, expec
     submission_file = submission_dir / f"{task_id}.json"
     create_mock_json(submission_file, submission_data)
 
-    result = scorer.score_task(task_id, submission_file)
+    result = scorer.score_task_from_file(task_id, submission_file)
 
     assert result["score"] == pytest.approx(expected_score)
     assert result["cost"] == pytest.approx(expected_cost)
@@ -268,13 +296,13 @@ def run_error_test_scenario(arc_scorer_fixture, submission_data, expected_except
     create_mock_json(submission_file, submission_data)
 
     with pytest.raises(expected_exception):
-        scorer.score_task(task_id, submission_file)
+        scorer.score_task_from_file(task_id, submission_file)
 
 def test_malformed_not_dict(arc_scorer_fixture):
-    run_error_test_scenario(arc_scorer_fixture, SUBMISSION_MALFORMED_NOT_DICT, TypeError)
+    run_error_test_scenario(arc_scorer_fixture, SUBMISSION_MALFORMED_NOT_DICT, ValidationError)
 
 def test_malformed_no_metadata(arc_scorer_fixture):
-    run_error_test_scenario(arc_scorer_fixture, SUBMISSION_MALFORMED_NO_METADATA, KeyError)
+    run_error_test_scenario(arc_scorer_fixture, SUBMISSION_MALFORMED_NO_METADATA, ValidationError)
 
 def test_malformed_no_answer(arc_scorer_fixture):
     run_error_test_scenario(arc_scorer_fixture, SUBMISSION_MALFORMED_NO_ANSWER, KeyError)
